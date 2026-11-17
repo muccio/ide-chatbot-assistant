@@ -141,11 +141,13 @@ const FOCUS_AND_INSERT_SCRIPT = (promptText: string, autoSubmit: boolean): strin
 const EXTRACT_CODE_BLOCKS_SCRIPT = `
 (() => {
   const results = [];
-  const preElements = Array.from(document.querySelectorAll('pre'));
+  const allPre = document.querySelectorAll('pre');
+  const startIdx = Math.max(0, allPre.length - 25);
 
-  for (const pre of preElements) {
+  for (let i = startIdx; i < allPre.length; i += 1) {
+    const pre = allPre[i];
     const codeEl = pre.querySelector('code') || pre;
-    const text = (codeEl.innerText || codeEl.textContent || '').trim();
+    const text = (codeEl.textContent || '').trim();
     if (!text) continue;
 
     let language = 'text';
@@ -220,7 +222,7 @@ export async function extractCodeBlocksFromChatbot(
   try {
     const raw = (await webContents.executeJavaScript(
       EXTRACT_CODE_BLOCKS_SCRIPT,
-      true,
+      false,
     )) as RawExtractedBlock[];
     if (!Array.isArray(raw)) {
       return [];

@@ -2,7 +2,7 @@ export type OutputMode = 'code-only' | 'code-and-brief' | 'diff-only' | 'detaile
 
 export type QuickActionType = 'send' | 'fix' | 'refactor' | 'tests' | 'explain';
 
-export type UserAgentMode = 'auto' | 'chrome-mac' | 'chrome-win' | 'custom';
+export type UserAgentMode = 'auto' | 'chrome-mac' | 'chrome-win' | 'firefox-mac' | 'firefox-win' | 'custom';
 
 export interface ChatbotProvider {
   id: string;

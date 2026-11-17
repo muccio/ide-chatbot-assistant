@@ -1,9 +1,12 @@
 import { app, BrowserWindow, Menu, MenuItemConstructorOptions } from 'electron';
 import { join } from 'node:path';
-import { ChatbotHost } from './chatbotHost';
+import { ChatbotHost, cleanChromiumUserAgent } from './chatbotHost';
 import { ClipboardWatcher } from './clipboardWatcher';
 import { IpcController, registerIpcHandlers } from './ipc';
 import { ConfigStore } from './store';
+
+app.commandLine.appendSwitch('disable-blink-features', 'AutomationControlled');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
 
 let mainWindow: BrowserWindow | null = null;
 let chatbotHost: ChatbotHost | null = null;
@@ -160,6 +163,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  app.userAgentFallback = cleanChromiumUserAgent(app.userAgentFallback || '');
   createWindow();
 
   app.on('activate', () => {

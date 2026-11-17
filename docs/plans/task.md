@@ -7,3 +7,4 @@
 | 5 | Task 4: Shell Renderer UI (Toolbar, Side Panel, Status Bar) | Done | `index.html`, `styles.css`, `renderer.ts` |
 | 6 | Task 5: Preload/Clipboard/AoT/Opacity Fix & 24 Chatbots | Done | Fixed ESM preload overwrite, fullscreen AoT, E2E Electron verified (`E2E_ALL_PASSED`) |
 | 7 | Task 6: macOS Build, Git Repo, Push & Release | Done | Repo `muccio/ide-chatbot-assistant`, pushed `main` & `v1.0.0` release |
+| 8 | Task 7: Fix Browser Freeze/Queue & Google Auth UA (`v1.0.1`) | Done | Non-overlapping `textContent` poll, debounced disk I/O, exact Chromium UA + Firefox fallback, `v1.0.1` packaged & released |

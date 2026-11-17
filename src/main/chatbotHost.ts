@@ -1,5 +1,5 @@
-import { BrowserWindow, Session, WebContentsView, session } from 'electron';
-import { CHROME_USER_AGENTS } from '../shared/defaults';
+import { app, BrowserWindow, Session, WebContentsView, session } from 'electron';
+import { CHROME_USER_AGENTS, FIREFOX_USER_AGENTS } from '../shared/defaults';
 import { calculateWebViewBounds, clampOpacity } from '../shared/layoutMath';
 import {
   AppConfig,
@@ -18,12 +18,22 @@ import { ConfigStore } from './store';
 
 export const TOP_BAR_HEIGHT = 54;
 export const STATUS_BAR_HEIGHT = 26;
+const CODE_POLL_INTERVAL_MS = 2500;
 
 export interface HostCallbacks {
   onNavigation: (state: NavigationState) => void;
   onCodeBlocks: (blocks: ExtractedCodeBlock[]) => void;
   onConfig: (config: AppConfig) => void;
   onToast: (message: string, kind: 'info' | 'success' | 'error') => void;
+}
+
+export function cleanChromiumUserAgent(rawUa: string): string {
+  return rawUa
+    .replace(/\s*Electron\/\S+/g, '')
+    .replace(/\s*ide-chatbot-assistant\/\S+/gi, '')
+    .replace(/\s*IDE Chatbot Assistant\/\S+/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 function resolveUserAgent(mode: UserAgentMode, customUa: string): string {
@@ -33,10 +43,23 @@ function resolveUserAgent(mode: UserAgentMode, customUa: string): string {
   if (mode === 'chrome-win') {
     return CHROME_USER_AGENTS.win;
   }
+  if (mode === 'firefox-mac') {
+    return FIREFOX_USER_AGENTS.mac;
+  }
+  if (mode === 'firefox-win') {
+    return FIREFOX_USER_AGENTS.win;
+  }
   if (mode === 'custom' && customUa.trim()) {
     return customUa.trim();
   }
-  return process.platform === 'win32' ? CHROME_USER_AGENTS.win : CHROME_USER_AGENTS.mac;
+  const fallback = cleanChromiumUserAgent(app.userAgentFallback || '');
+  if (fallback.includes('Chrome/')) {
+    return fallback;
+  }
+  const chromeVer = process.versions.chrome || '130.0.6723.191';
+  return process.platform === 'win32'
+    ? `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVer} Safari/537.36`
+    : `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVer} Safari/537.36`;
 }
 
 /**
@@ -47,6 +70,7 @@ export class ChatbotHost {
   private readonly store: ConfigStore;
   private readonly clipboardWatcher: ClipboardWatcher;
   private readonly callbacks: HostCallbacks;
+  private readonly configuredSessions = new WeakSet<Session>();
 
   private chatbotView: WebContentsView | null = null;
   private activeProfileId = '';
@@ -59,6 +83,11 @@ export class ChatbotHost {
   };
   private extractedBlocks: ExtractedCodeBlock[] = [];
   private codePollTimer: NodeJS.Timeout | null = null;
+  private isCodePollInFlight = false;
+  private disposed = false;
+  private boundsSaveTimer: NodeJS.Timeout | null = null;
+  private navSaveTimer: NodeJS.Timeout | null = null;
+  private lastAppliedOpacity: number | null = null;
   private lastStableBlockHash = '';
   private pendingCandidateHash = '';
   private opacityPreviewUntil = 0;
@@ -89,16 +118,32 @@ export class ChatbotHost {
       this.applyWindowOpacity();
     });
 
-    this.mainWindow.on('moved', () => this.saveWindowBounds());
-    this.mainWindow.on('resized', () => this.saveWindowBounds());
+    this.mainWindow.on('moved', () => this.scheduleSaveWindowBounds());
+    this.mainWindow.on('resized', () => this.scheduleSaveWindowBounds());
   }
 
-  private saveWindowBounds(): void {
-    if (this.mainWindow.isDestroyed() || this.mainWindow.isMinimized() || this.mainWindow.isMaximized()) {
-      return;
+  private scheduleSaveWindowBounds(): void {
+    if (this.boundsSaveTimer) {
+      clearTimeout(this.boundsSaveTimer);
     }
-    const bounds = this.mainWindow.getBounds();
-    this.store.updateWindowSettings({ bounds });
+    this.boundsSaveTimer = setTimeout(() => {
+      this.boundsSaveTimer = null;
+      if (this.mainWindow.isDestroyed() || this.mainWindow.isMinimized() || this.mainWindow.isMaximized()) {
+        return;
+      }
+      const bounds = this.mainWindow.getBounds();
+      this.store.updateWindowSettings({ bounds });
+    }, 400);
+  }
+
+  private scheduleSaveActiveTarget(url: string): void {
+    if (this.navSaveTimer) {
+      clearTimeout(this.navSaveTimer);
+    }
+    this.navSaveTimer = setTimeout(() => {
+      this.navSaveTimer = null;
+      this.store.setActiveTarget(url);
+    }, 500);
   }
 
   init(): void {
@@ -107,13 +152,22 @@ export class ChatbotHost {
     this.applyWindowOpacity();
     this.mountChatbotView(config.session.profileId);
     this.navigate(config.activeUrl, config.activeProviderId);
-    this.startCodePolling();
+    this.scheduleNextCodePoll();
   }
 
   dispose(): void {
+    this.disposed = true;
     if (this.codePollTimer) {
-      clearInterval(this.codePollTimer);
+      clearTimeout(this.codePollTimer);
       this.codePollTimer = null;
+    }
+    if (this.boundsSaveTimer) {
+      clearTimeout(this.boundsSaveTimer);
+      this.boundsSaveTimer = null;
+    }
+    if (this.navSaveTimer) {
+      clearTimeout(this.navSaveTimer);
+      this.navSaveTimer = null;
     }
   }
 
@@ -122,9 +176,40 @@ export class ChatbotHost {
     return session.fromPartition(`persist:chatbot-${safeProfile}`);
   }
 
+  private ensureSessionHeaderInterceptor(ses: Session): void {
+    if (this.configuredSessions.has(ses)) {
+      return;
+    }
+    this.configuredSessions.add(ses);
+
+    ses.webRequest.onBeforeSendHeaders((details, callback) => {
+      const { userAgentMode, customUserAgent } = this.store.getConfig().session;
+      const ua = resolveUserAgent(userAgentMode, customUserAgent);
+      const headers = { ...details.requestHeaders };
+      headers['User-Agent'] = ua;
+
+      if (userAgentMode.startsWith('firefox')) {
+        for (const key of Object.keys(headers)) {
+          if (key.toLowerCase().startsWith('sec-ch-ua')) {
+            delete headers[key];
+          }
+        }
+      } else {
+        for (const key of Object.keys(headers)) {
+          if (key.toLowerCase() === 'sec-ch-ua' && typeof headers[key] === 'string') {
+            headers[key] = headers[key].replace(/,?\s*"Electron";v="[^"]*"/gi, '').trim();
+          }
+        }
+      }
+
+      callback({ requestHeaders: headers });
+    });
+  }
+
   private applySessionPreferences(ses: Session, config: AppConfig): void {
     const ua = resolveUserAgent(config.session.userAgentMode, config.session.customUserAgent);
     ses.setUserAgent(ua);
+    this.ensureSessionHeaderInterceptor(ses);
     if (this.chatbotView && !this.chatbotView.webContents.isDestroyed()) {
       this.chatbotView.webContents.setUserAgent(ua);
       this.chatbotView.webContents.setZoomFactor(config.session.zoomFactor);
@@ -145,6 +230,7 @@ export class ChatbotHost {
     const ses = this.getSessionForProfile(profileId);
     const ua = resolveUserAgent(config.session.userAgentMode, config.session.customUserAgent);
     ses.setUserAgent(ua);
+    this.ensureSessionHeaderInterceptor(ses);
 
     const view = new WebContentsView({
       webPreferences: {
@@ -153,6 +239,7 @@ export class ChatbotHost {
         nodeIntegration: false,
         sandbox: true,
         spellcheck: true,
+        backgroundThrottling: false,
       },
     });
 
@@ -176,15 +263,21 @@ export class ChatbotHost {
             contextIsolation: true,
             nodeIntegration: false,
             sandbox: true,
+            backgroundThrottling: false,
           },
         },
       };
     });
 
     view.webContents.on('did-create-window', (childWindow) => {
-      childWindow.webContents.setUserAgent(ua);
-      if (this.store.getConfig().window.alwaysOnTop) {
-        childWindow.setAlwaysOnTop(true, process.platform === 'darwin' ? 'floating' : 'pop-up-menu');
+      const currentCfg = this.store.getConfig();
+      const childUa = resolveUserAgent(
+        currentCfg.session.userAgentMode,
+        currentCfg.session.customUserAgent,
+      );
+      childWindow.webContents.setUserAgent(childUa);
+      if (currentCfg.window.alwaysOnTop) {
+        childWindow.setAlwaysOnTop(true, 'floating');
       }
     });
 
@@ -215,11 +308,17 @@ export class ChatbotHost {
       void this.refreshCodeBlocks();
     });
     view.webContents.on('did-navigate', (_e, url) => {
-      this.store.setActiveTarget(url);
+      this.scheduleSaveActiveTarget(url);
       emitNav();
+      if (url.includes('accounts.google.com')) {
+        this.callbacks.onToast(
+          'Google Login: se compare "browser non sicuro", prova User-Agent Firefox in Parametri o accedi con Email/Password sul provider.',
+          'info',
+        );
+      }
     });
     view.webContents.on('did-navigate-in-page', (_e, url) => {
-      this.store.setActiveTarget(url);
+      this.scheduleSaveActiveTarget(url);
       emitNav();
     });
     view.webContents.on('page-title-updated', () => emitNav());
@@ -228,6 +327,19 @@ export class ChatbotHost {
         return; // Ignore benign aborted navigations
       }
       emitNav(`Errore caricamento (${errorCode}) per ${validatedURL}: ${errorDescription}`);
+    });
+
+    // Mask navigator.userAgentData when emulating Firefox so headers & JS match
+    view.webContents.on('dom-ready', () => {
+      const { userAgentMode } = this.store.getConfig().session;
+      if (userAgentMode.startsWith('firefox') && !view.webContents.isDestroyed()) {
+        void view.webContents
+          .executeJavaScript(
+            '(() => { try { Object.defineProperty(Navigator.prototype, "userAgentData", { get: () => undefined, configurable: true }); } catch {} return true; })()',
+            false,
+          )
+          .catch(() => {});
+      }
     });
 
     this.chatbotView = view;
@@ -324,7 +436,12 @@ export class ChatbotHost {
     const { opacity, fullOpacityOnFocus } = this.store.getConfig().window;
     const previewActive = Date.now() < this.opacityPreviewUntil;
     const shouldBoost = fullOpacityOnFocus && this.mainWindow.isFocused() && !previewActive;
-    this.mainWindow.setOpacity(shouldBoost ? 1.0 : clampOpacity(opacity));
+    const targetOpacity = shouldBoost ? 1.0 : clampOpacity(opacity);
+
+    if (this.lastAppliedOpacity !== targetOpacity) {
+      this.lastAppliedOpacity = targetOpacity;
+      this.mainWindow.setOpacity(targetOpacity);
+    }
   }
 
   setSidebarOpen(open: boolean): AppConfig {
@@ -336,6 +453,7 @@ export class ChatbotHost {
 
   updateSessionSettings(patch: Partial<AppConfig['session']>): AppConfig {
     const prevProfile = this.activeProfileId;
+    const prevUaMode = this.store.getConfig().session.userAgentMode;
     const config = this.store.updateSessionSettings(patch);
     this.clipboardWatcher.configure(
       config.session.clipboardPollingEnabled,
@@ -348,6 +466,9 @@ export class ChatbotHost {
     } else {
       const ses = this.getSessionForProfile(config.session.profileId);
       this.applySessionPreferences(ses, config);
+      if (config.session.userAgentMode !== prevUaMode) {
+        this.reload();
+      }
     }
 
     this.callbacks.onConfig(config);
@@ -370,40 +491,63 @@ export class ChatbotHost {
     return injectPromptIntoChatbot(this.chatbotView.webContents, promptText, autoSubmit);
   }
 
-  private startCodePolling(): void {
-    this.codePollTimer = setInterval(() => {
-      void this.refreshCodeBlocks();
-    }, 1200);
+  private scheduleNextCodePoll(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.codePollTimer = setTimeout(async () => {
+      if (this.disposed) {
+        return;
+      }
+      if (
+        this.chatbotView &&
+        !this.chatbotView.webContents.isDestroyed() &&
+        !this.chatbotView.webContents.isLoading()
+      ) {
+        await this.refreshCodeBlocks();
+      }
+      this.scheduleNextCodePoll();
+    }, CODE_POLL_INTERVAL_MS);
   }
 
   async refreshCodeBlocks(): Promise<ExtractedCodeBlock[]> {
-    if (!this.chatbotView || this.chatbotView.webContents.isDestroyed()) {
-      return [];
-    }
-    const blocks = await extractCodeBlocksFromChatbot(this.chatbotView.webContents);
-    const serializedPrev = this.extractedBlocks.map((b) => b.hash).join(',');
-    const serializedNext = blocks.map((b) => b.hash).join(',');
-
-    if (serializedPrev !== serializedNext) {
-      this.extractedBlocks = blocks;
-      this.callbacks.onCodeBlocks(blocks);
+    if (
+      this.isCodePollInFlight ||
+      !this.chatbotView ||
+      this.chatbotView.webContents.isDestroyed()
+    ) {
+      return this.extractedBlocks;
     }
 
-    const latest = blocks[blocks.length - 1];
-    if (latest && this.store.getConfig().session.autoCopyGeneratedCode) {
-      if (latest.hash !== this.lastStableBlockHash) {
-        if (this.pendingCandidateHash === latest.hash) {
-          this.lastStableBlockHash = latest.hash;
-          this.pendingCandidateHash = '';
-          this.clipboardWatcher.writeOutputToClipboard(latest.code);
-          this.callbacks.onToast('Nuovo blocco codice copiato automaticamente in clipboard!', 'success');
-        } else {
-          this.pendingCandidateHash = latest.hash;
+    this.isCodePollInFlight = true;
+    try {
+      const blocks = await extractCodeBlocksFromChatbot(this.chatbotView.webContents);
+      const serializedPrev = this.extractedBlocks.map((b) => b.hash).join(',');
+      const serializedNext = blocks.map((b) => b.hash).join(',');
+
+      if (serializedPrev !== serializedNext) {
+        this.extractedBlocks = blocks;
+        this.callbacks.onCodeBlocks(blocks);
+      }
+
+      const latest = blocks[blocks.length - 1];
+      if (latest && this.store.getConfig().session.autoCopyGeneratedCode) {
+        if (latest.hash !== this.lastStableBlockHash) {
+          if (this.pendingCandidateHash === latest.hash) {
+            this.lastStableBlockHash = latest.hash;
+            this.pendingCandidateHash = '';
+            this.clipboardWatcher.writeOutputToClipboard(latest.code);
+            this.callbacks.onToast('Nuovo blocco codice copiato automaticamente in clipboard!', 'success');
+          } else {
+            this.pendingCandidateHash = latest.hash;
+          }
         }
       }
-    }
 
-    return blocks;
+      return blocks;
+    } finally {
+      this.isCodePollInFlight = false;
+    }
   }
 
   getNavigationState(): NavigationState {

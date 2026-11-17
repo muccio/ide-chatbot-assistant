@@ -1,6 +1,6 @@
 {
   "name": "ide-chatbot-assistant",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Standalone floating LLM chatbot browser for macOS & Windows with IDE clipboard bridge, configurable operating parameters, always-on-top, and adjustable opacity.",
   "main": "dist/main/main.js",
   "author": "IDE Chatbot Assistant",
