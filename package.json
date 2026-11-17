@@ -1,0 +1,80 @@
+{
+  "name": "ide-chatbot-assistant",
+  "version": "1.0.0",
+  "description": "Standalone floating LLM chatbot browser for macOS & Windows with IDE clipboard bridge, configurable operating parameters, always-on-top, and adjustable opacity.",
+  "main": "dist/main/main.js",
+  "author": "IDE Chatbot Assistant",
+  "license": "MIT",
+  "scripts": {
+    "build:main": "tsc -p tsconfig.json",
+    "build:renderer": "tsc -p tsconfig.renderer.json",
+    "build:assets": "node scripts/copy-assets.mjs",
+    "build": "npm run build:renderer && npm run build:main && npm run build:assets",
+    "start": "npm run build && electron .",
+    "dev": "npm run start",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "icons": "node scripts/generate-icons.mjs",
+    "package:mac": "npm run icons && npm run build && electron-builder --mac --arm64 --x64",
+    "package:mac:dmg": "npm run icons && npm run build && electron-builder --mac dmg zip",
+    "package:win": "npm run icons && npm run build && electron-builder --win",
+    "package:dir": "npm run icons && npm run build && electron-builder --dir"
+  },
+  "build": {
+    "appId": "com.idechatbot.assistant",
+    "productName": "IDE Chatbot Assistant",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icns",
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

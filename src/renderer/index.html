@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+  <title>IDE Chatbot Assistant</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <div class="nav-group">
+        <button id="btn-sidebar" class="icon-btn" title="Mostra/Nascondi Pannello (Cmd/Ctrl+Shift+B)">☰</button>
+        <button id="btn-back" class="icon-btn" title="Indietro">◀</button>
+        <button id="btn-forward" class="icon-btn" title="Avanti">▶</button>
+        <button id="btn-reload" class="icon-btn" title="Ricarica (Cmd/Ctrl+R)">↻</button>
+      </div>
+
+      <div class="url-group">
+        <select id="provider-select" title="Scegli Chatbot LLM"></select>
+        <form id="url-form" class="url-form">
+          <input id="url-input" type="text" placeholder="Inserisci URL chatbot (es. chatgpt.com, localhost:3000)..." spellcheck="false" />
+          <button type="submit" class="primary-btn compact">Vai</button>
+        </form>
+      </div>
+
+      <div class="window-controls">
+        <button id="btn-aot" class="toggle-btn" title="Always on Top (Cmd/Ctrl+Shift+T)">
+          <span class="dot"></span>
+          <span>Pin Top</span>
+        </button>
+        <label class="opacity-control" title="Trasparenza Finestra">
+          <span>α</span>
+          <input id="opacity-slider" type="range" min="25" max="100" step="1" value="96" />
+          <span id="opacity-value">96%</span>
+        </label>
+      </div>
+    </header>
+
+    <main id="workspace">
+      <aside id="sidebar">
+        <nav class="tabs">
+          <button class="tab-btn active" data-tab="clipboard">Clipboard IDE</button>
+          <button class="tab-btn" data-tab="params">Parametri</button>
+          <button class="tab-btn" data-tab="output">Output <span id="output-badge" class="badge">0</span></button>
+        </nav>
+
+        <!-- TAB 1: CLIPBOARD IDE -->
+        <section id="tab-clipboard" class="tab-panel active">
+          <div class="section-header">
+            <span>Codice in Clipboard (dall'IDE)</span>
+            <span id="clipboard-meta" class="muted">Vuoto</span>
+          </div>
+
+          <textarea id="clipboard-preview" class="code-editor" spellcheck="false" placeholder="Copia del codice nel tuo IDE (Ctrl/Cmd+C) per vederlo qui automaticamente, oppure incolla/scrivi qui..."></textarea>
+
+          <div class="field-group">
+            <label for="user-instruction">Istruzione extra (opzionale)</label>
+            <input id="user-instruction" type="text" placeholder="Es: Ottimizza per O(n), usa async/await..." />
+          </div>
+
+          <div class="actions-grid">
+            <button class="primary-btn action-btn" data-action="send" title="Inietta prompt + codice nella chat (Cmd/Ctrl+Shift+I)">Invia in Chat</button>
+            <button class="secondary-btn action-btn" data-action="fix">Fix Bug</button>
+            <button class="secondary-btn action-btn" data-action="refactor">Refactor</button>
+            <button class="secondary-btn action-btn" data-action="tests">Unit Test</button>
+            <button class="secondary-btn action-btn" data-action="explain">Spiega</button>
+            <button id="btn-copy-latest-output" class="accent-btn" title="Copia l'ultimo blocco di codice generato dal chatbot (Cmd/Ctrl+Shift+K)">Copia Risposta → IDE</button>
+          </div>
+
+          <div class="section-header spaced">
+            <span>Cronologia Clipboard</span>
+            <button id="btn-clear-history" class="link-btn">Pulisci</button>
+          </div>
+          <div id="clipboard-history" class="history-list"></div>
+        </section>
+
+        <!-- TAB 2: PARAMETRI OPERATIVI -->
+        <section id="tab-params" class="tab-panel">
+          <div class="section-header">
+            <span>Preset Operativo Attivo</span>
+            <div class="inline-btns">
+              <button id="btn-new-preset" class="link-btn">+ Nuovo</button>
+              <button id="btn-delete-preset" class="link-btn danger">Elimina</button>
+            </div>
+          </div>
+
+          <div class="field-group">
+            <select id="preset-select"></select>
+          </div>
+
+          <form id="preset-form" class="compact-form">
+            <div class="field-group">
+              <label for="preset-name">Nome Preset</label>
+              <input id="preset-name" type="text" required />
+            </div>
+
+            <div class="row-2">
+              <div class="field-group">
+                <label for="preset-lang">Linguaggio / Stack</label>
+                <input id="preset-lang" type="text" placeholder="Auto-detect, TypeScript, Python..." />
+              </div>
+              <div class="field-group">
+                <label for="preset-output">Formato Risposta</label>
+                <select id="preset-output">
+                  <option value="code-only">Solo codice</option>
+                  <option value="code-and-brief">Codice + breve nota</option>
+                  <option value="diff-only">Diff / Fix mirato</option>
+                  <option value="detailed">Analisi dettagliata</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="field-group">
+              <label for="preset-role">Ruolo / System Prompt</label>
+              <textarea id="preset-role" rows="2"></textarea>
+            </div>
+
+            <div class="field-group">
+              <label for="preset-rules">Regole Operative</label>
+              <textarea id="preset-rules" rows="2"></textarea>
+            </div>
+
+            <div class="row-2">
+              <div class="field-group">
+                <label for="preset-prefix">Prefisso</label>
+                <input id="preset-prefix" type="text" placeholder="Opzionale..." />
+              </div>
+              <div class="field-group">
+                <label for="preset-suffix">Suffisso</label>
+                <input id="preset-suffix" type="text" placeholder="Opzionale..." />
+              </div>
+            </div>
+
+            <button type="submit" class="primary-btn full-width">Salva Preset Operativo</button>
+          </form>
+
+          <hr class="divider" />
+
+          <div class="section-header">
+            <span>Comportamento &amp; Finestra</span>
+          </div>
+
+          <div class="toggles-list">
+            <label class="checkbox-row">
+              <input id="chk-auto-submit" type="checkbox" />
+              <span>Auto-invia dopo iniezione in chat</span>
+            </label>
+            <label class="checkbox-row">
+              <input id="chk-auto-copy" type="checkbox" />
+              <span>Auto-copia nuovo codice generato in clipboard</span>
+            </label>
+            <label class="checkbox-row">
+              <input id="chk-polling" type="checkbox" />
+              <span>Monitora clipboard IDE automaticamente</span>
+            </label>
+            <label class="checkbox-row">
+              <input id="chk-focus-opacity" type="checkbox" />
+              <span>Opacità 100% quando la finestra ha il focus</span>
+            </label>
+          </div>
+
+          <div class="row-2">
+            <div class="field-group">
+              <label for="session-profile">Profilo Login</label>
+              <select id="session-profile"></select>
+            </div>
+            <div class="field-group">
+              <label for="session-zoom">Zoom (<span id="zoom-label">100%</span>)</label>
+              <input id="session-zoom" type="range" min="60" max="160" step="5" value="100" />
+            </div>
+          </div>
+
+          <div class="field-group">
+            <label for="session-ua">User-Agent Browser</label>
+            <select id="session-ua">
+              <option value="auto">Chrome Standard (Auto OS)</option>
+              <option value="chrome-mac">Chrome macOS</option>
+              <option value="chrome-win">Chrome Windows</option>
+              <option value="custom">Personalizzato</option>
+            </select>
+          </div>
+
+          <div id="custom-ua-wrap" class="field-group hidden">
+            <input id="session-custom-ua" type="text" placeholder="Mozilla/5.0 ..." />
+          </div>
+
+          <div class="inline-actions">
+            <button id="btn-clear-session" class="secondary-btn">Logout / Pulisci Cookie</button>
+          </div>
+
+          <hr class="divider" />
+
+          <div class="section-header">
+            <span>Chatbot Personalizzati</span>
+          </div>
+          <form id="add-provider-form" class="compact-form">
+            <div class="row-2">
+              <input id="new-provider-name" type="text" placeholder="Nome (es. Ollama)" required />
+              <input id="new-provider-url" type="text" placeholder="URL (es. localhost:3000)" required />
+            </div>
+            <button type="submit" class="secondary-btn full-width">+ Aggiungi ai Preferiti</button>
+          </form>
+          <div id="custom-providers-list" class="history-list"></div>
+        </section>
+
+        <!-- TAB 3: OUTPUT ESTRATTO -->
+        <section id="tab-output" class="tab-panel">
+          <div class="section-header">
+            <span>Blocchi Codice dalla Chat</span>
+            <button id="btn-refresh-blocks" class="link-btn">Aggiorna</button>
+          </div>
+          <p class="hint-text">I blocchi di codice generati dal chatbot vengono rilevati qui per copiarli con 1 click nell'IDE.</p>
+          <div id="output-blocks-list" class="blocks-list"></div>
+        </section>
+      </aside>
+
+      <section id="viewport-placeholder">
+        <div class="viewport-fallback">
+          <span>Caricamento finestra chatbot...</span>
+        </div>
+      </section>
+    </main>
+
+    <footer id="statusbar">
+      <div class="status-left">
+        <span id="status-indicator" class="status-dot"></span>
+        <span id="status-url">Pronto</span>
+      </div>
+      <div id="toast-bar" class="toast-bar"></div>
+      <div class="status-right">
+        <span id="status-profile">Profilo: default</span>
+      </div>
+    </footer>
+  </div>
+
+  <script type="module" src="./renderer.js"></script>
+</body>
+</html>
